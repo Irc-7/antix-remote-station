@@ -103,7 +103,7 @@ antix-remote-station/
 ### Langkah Instalasi
 1. Clone repositori ke direktori kerja pengguna:
    ```bash
-   git clone https://github.com/your-username/antix-remote-station.git
+   git clone https://github.com/Irc-7/antix-remote-station.git
    cd antix-remote-station
    ```
 
