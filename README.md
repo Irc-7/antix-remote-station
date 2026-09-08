@@ -14,29 +14,36 @@ Sistem difokuskan secara eksklusif untuk dua peran utama:
 +-------------------------------------------------------------------------+
 |                  antiX Linux (Debian Base, SysVinit)                    |
 +-------------------------------------------------------------------------+
-| Lapisan Kernel & Resource Governor:                                     |
+| Lapisan Kernel & Resource Governor (Root Context):                      |
 |  - vm.swappiness=150 (Prioritas zRAM swap terkompresi zstd)             |
 |  - vm.vfs_cache_pressure=50 (Pertahankan inode/dentry cache)            |
 |  - vm.overcommit_memory=2 & ratio=80 (Proteksi alokasi berlebih)        |
 |  - earlyoom daemon (OOM Killer responsif: RAM < 5%, Swap < 10%)         |
 +-------------------------------------------------------------------------+
-| Lapisan Antarmuka Pengguna (UI):                                        |
+| Lapisan Antarmuka Pengguna (UI - User Context):                         |
 |  - IceWM Window Manager (Konsumsi RAM ~15-25 MB)                        |
 |  - FT10 Transformation Suite (Taskbar, tray, & start menu Windows-style)|
 |  - Papirus Icon Theme + Native GTK tanpa desktop daemon berat           |
 +-----------------------------------+-------------------------------------+
 | Aplikasi 1: Native AnyDesk        | Aplikasi 2: Hermes Agent CLI Client |
-|  - Paket Debian resmi (.deb)      |  - Python 3 Isolated venv           |
+|  - Paket Debian resmi (.deb)      |  - Python 3 Isolated User venv      |
 |  - Akses remote desktop native    |  - Binary-only pip (--no-cache-dir) |
 |  - Shortcut taskbar & desktop     |  - Safeguard: ulimit -v 409600      |
 |                                   |  - External REST/Streaming API      |
 +-----------------------------------+-------------------------------------+
 ```
 
-### Prinsip Zero-Bloat
-- **Tanpa Kompilasi di Mesin Target**: Seluruh pustaka Python diinstal menggunakan `--no-cache-dir --only-binary=:all:`.
-- **Purging Daemon Non-Esensial**: Menonaktifkan layanan pencetak (CUPS), Bluetooth (BlueZ), Avahi, scanner, dan daemon latar belakang yang memakan RAM.
-- **Pembersihan Cache Berkala**: Pembersihan otomatis file cache APT (`clean`, `autoremove --purge`, dan `/var/lib/apt/lists/*`).
+### Penanganan Hak Akses (Privilege Separation & Anti-Permission Trap)
+Ketika skrip instalasi dijalankan melalui `sudo ./install.sh`, penggunaan tilde (`~`) atau variabel `$HOME` rentan mengarah ke `/root`, mengakibatkan file user-space (seperti virtualenv, file desktop, dan konfigurasi) dimiliki oleh root dan memicu error `Permission Denied` bagi pengguna biasa.
+
+Arsitektur otomasi ini memisahkan konteks eksekusi secara deterministik:
+1. **Deteksi Non-Root User:**
+   ```bash
+   TARGET_USER="${SUDO_USER:-$USER}"
+   TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+   ```
+2. **Konteks Root (System Level):** Instalasi APT, kernel sysctl, konfigurasi earlyoom, zRAM, dan direktori `/opt/hermes-station`.
+3. **Konteks Pengguna (User-Space Level):** Pembuatan virtualenv (`$TARGET_HOME/.venv/hermes`), instalasi pip, konfigurasi tema IceWM, shortcut desktop, dan file `.env` dieksekusi atas nama pengguna target menggunakan perintah `sudo -u "$TARGET_USER"` serta penguncian izin `chmod 600` pada file kredensial.
 
 ---
 
@@ -51,7 +58,7 @@ Pengukuran konsumsi RAM sistem pada arsitektur x86_64:
 | **AnyDesk Sesi Aktif** | **~260 MB - 330 MB** | ~20 - 45 MB (zstd) | Decoding video remote desktop H.264 |
 | **Beban Puncak (Keduanya)** | **~380 MB - 460 MB** | ~60 - 90 MB (zstd) | Sisa RAM fisik > 500 MB (sangat stabil) |
 
-*Catatan: zRAM dengan rasio kompresi algoritma `zstd` (~2.5x hingga 3x) memberikan ruang swap virtual dinamis sebesar 1 GB di dalam RAM tanpa latency lambat dari hard drive mekanis.*
+*Catatan: zRAM dengan rasio kompresi algoritma `zstd` (~2.5x hingga 3x) menyediakan ruang swap virtual dinamis sebesar 1 GB di dalam RAM tanpa latency dari disk mekanis.*
 
 ---
 
@@ -59,13 +66,14 @@ Pengukuran konsumsi RAM sistem pada arsitektur x86_64:
 
 ```text
 antix-remote-station/
+├── .gitignore                          # Proteksi file .env dan cache Python
 ├── README.md                           # Dokumentasi teknis & panduan deployment
 ├── install.sh                          # Master script orkestrasi post-install
 ├── scripts/
 │   ├── 01-tuning.sh                    # Kernel sysctl, zRAM, earlyoom, & disable bloat
 │   ├── 02-desktop-theme.sh             # IceWM, modul FT10, font, & tema Papirus
 │   ├── 03-remote-apps.sh               # Instalasi AnyDesk .deb & pin taskbar
-│   └── 04-hermes-setup.sh              # Setup virtualenv Python & CLI client
+│   └── 04-hermes-setup.sh              # Setup virtualenv Python (user context)
 ├── configs/
 │   ├── sysctl.d/
 │   │   └── 99-lowram-tuning.conf       # Parameter kernel swappiness & overcommit
@@ -89,10 +97,11 @@ antix-remote-station/
 
 ### Prasyarat
 - Sistem antiX Linux (Base, Full, atau Core) yang baru selesai dipasang.
+- Jalankan terminal sebagai user biasa (bukan login langsung sebagai `root`).
 - Koneksi internet aktif.
 
 ### Langkah Instalasi
-1. Clone repositori atau salin folder ke mesin antiX:
+1. Clone repositori ke direktori kerja pengguna:
    ```bash
    git clone https://github.com/your-username/antix-remote-station.git
    cd antix-remote-station
@@ -103,12 +112,12 @@ antix-remote-station/
    chmod +x install.sh
    ```
 
-3. Jalankan script master dengan hak akses `sudo`:
+3. Jalankan script master menggunakan `sudo`:
    ```bash
    sudo ./install.sh
    ```
 
-Skrip akan menjalankan tahap 01 hingga 04 secara berurutan dengan output berwarna dan melakukan pembersihan disk secara otomatis.
+Skrip mendeteksi `$SUDO_USER` secara otomatis, mengeksekusi instalasi sistem via root, dan membangun user-space via konteks pengguna asli tanpa menimbulkan permission trap.
 
 ---
 
@@ -120,6 +129,7 @@ Hermes Agent berjalan murni sebagai client ringan yang meneruskan query ke API e
    ```bash
    nano ~/.config/hermes/.env
    ```
+   *(File ini telah diatur dengan izin `chmod 600` demi keamanan kredensial).*
 
 2. Konfigurasikan variabel environment:
    ```dotenv
@@ -131,18 +141,14 @@ Hermes Agent berjalan murni sebagai client ringan yang meneruskan query ke API e
    HERMES_TIMEOUT=60
    ```
 
-3. Simpan dengan `Ctrl + O`, lalu keluar dengan `Ctrl + X`.
+3. Simpan dengan `Ctrl + O` lalu keluar dengan `Ctrl + X`.
 
 4. Menjalankan Hermes:
    - Klik ikon terminal **Hermes Agent CLI** di desktop atau taskbar FT10.
-   - Atau panggil melalui terminal:
+   - Atau panggil melalui terminal biasa:
      ```bash
      run-hermes.sh
      ```
-
-Perintah di dalam CLI:
-- `/clear`: Mengosongkan riwayat sesi obrolan.
-- `/quit` atau `/exit`: Menutup sesi client.
 
 ---
 
@@ -153,9 +159,9 @@ Setelah seluruh konfigurasi selesai diuji, Anda dapat membuat file ISO bootable 
 ### Langkah 1: Persiapan Sistem
 Bersihkan file cache, log, dan riwayat terminal agar ukuran snapshot sekecil mungkin:
 ```bash
-# Pastikan API key pada ~/.config/hermes/.env tidak tertinggal jika ISO akan didistribusikan publik
-# Jika didistribusikan, kembalikan .env ke template contoh:
+# Kembalikan file .env ke template contoh jika ISO akan didistribusikan ke perangkat lain
 cp /opt/hermes-station/.env.example ~/.config/hermes/.env
+chmod 600 ~/.config/hermes/.env
 
 # Bersihkan history bash dan cache sementara
 history -c
@@ -165,50 +171,46 @@ sudo rm -rf /var/lib/apt/lists/*
 ```
 
 ### Langkah 2: Menjalankan Utilitas `iso-snapshot`
-Jalankan tool snapshot melalui terminal (CLI) atau via antarmuka GUI antiX Control Centre:
+Jalankan tool snapshot melalui terminal:
 ```bash
 sudo iso-snapshot
 ```
 
 ### Langkah 3: Konfigurasi Parameter Snapshot
-1. **Snapshot Type**: Pilih opsi **Personalized** jika ingin menyertakan akun user dan konfigurasi desktop saat ini, atau pilih opsi **Distribution** (rekomendasi untuk installer publik) untuk mereset akun user menjadi user bawaan `demo` tanpa menyertakan password pribadi.
-2. **Compression Type**: Pilih algoritma **xz** (ultra-kompresi, ukuran ISO terkecil ~700-900 MB) atau **zstd** (proses pembuatan lebih cepat).
-3. **Output Directory**: Secara default, file ISO akan disimpan di `/home/snapshot/`.
+1. **Snapshot Type**: Pilih opsi **Distribution** (installer publik, mereset password pribadi dan menggunakan user live bawaan) atau **Personalized** (menyertakan desktop dan home saat ini).
+2. **Compression Type**: Pilih algoritma **xz** untuk ukuran image minimal (~700-900 MB).
+3. **Output Directory**: Output ISO tersimpan di `/home/snapshot/`.
 
-### Langkah 4: Membakar ISO ke Media USB Flashdisk
-Setelah proses kompresi selesai, file ISO dapat disalin ke USB drive menggunakan perintah `dd`:
+### Langkah 4: Menulis ISO ke Media USB
 ```bash
-# Periksa identitas drive USB (contoh: /dev/sdb)
-lsblk
-
-# Tulis ISO ke USB drive (ganti /dev/sdX sesuai drive flashdisk)
+# Ganti /dev/sdX sesuai drive USB target
 sudo dd if=/home/snapshot/antix-remote-station.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
-
-Flashdisk installer kini siap digunakan untuk instalasi offline instan pada laptop ber-RAM 1 GB lainnya.
 
 ---
 
 ## 7. Verifikasi dan Diagnostik Sistem
 
-Untuk memverifikasi bahwa seluruh modul berjalan optimal:
+Untuk memverifikasi integritas hak akses dan performa:
 
-- **Periksa status zRAM**:
+- **Periksa kepemilikan virtualenv dan konfigurasi user:**
+  ```bash
+  ls -la ~/.venv/hermes
+  ls -la ~/.config/hermes/.env
+  ```
+  *(Pastikan owner dan group adalah akun pengguna biasa, bukan `root:root`).*
+
+- **Periksa status zRAM:**
   ```bash
   zramctl
   ```
-  *Output harus menampilkan disk `/dev/zram0` dengan algoritma `zstd` dan kapasitas setara RAM.*
 
-- **Periksa status EarlyOOM**:
+- **Periksa status EarlyOOM:**
   ```bash
   service earlyoom status
   ```
 
-- **Periksa nilai sysctl**:
+- **Periksa nilai sysctl:**
   ```bash
   sysctl vm.swappiness vm.vfs_cache_pressure vm.overcommit_memory
   ```
-  *Hasil:*
-  - `vm.swappiness = 150`
-  - `vm.vfs_cache_pressure = 50`
-  - `vm.overcommit_memory = 2`

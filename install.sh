@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # install.sh - Master Automation Script: antiX Remote Station (RAM 1 GB)
+# Refactored: Robust Non-Root User Detection & Privilege Separation
 # ==============================================================================
 set -euo pipefail
 
@@ -37,8 +38,8 @@ log_error() {
 
 # 1. Pengecekan Hak Akses Root
 if [[ $EUID -ne 0 ]]; then
-    log_error "Skrip ini wajib dijalankan dengan hak akses root!"
-    echo -e "Silakan jalankan: ${COLOR_YELLOW}sudo ./install.sh${COLOR_RESET}\n"
+    log_error "Skrip master harus dijalankan menggunakan hak akses root via sudo!"
+    echo -e "Silakan jalankan dari akun pengguna biasa: ${COLOR_YELLOW}sudo ./install.sh${COLOR_RESET}\n"
     exit 1
 fi
 
@@ -46,22 +47,48 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
 log_title "antiX Remote Station - Post-Install Automation (RAM 1 GB)"
-log_info "Memulai konfigurasi otomatis antiX Linux menjadi stasiun kerja remote..."
+log_info "Memulai konfigurasi otomatis antiX Linux..."
 log_info "Direktori sumber: ${REPO_DIR}"
 
-# 2. Deteksi Pengguna Target
-TARGET_USER="${SUDO_USER:-}"
-if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]]; then
-    TARGET_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || echo "demo")"
-fi
-USER_HOME="$(eval echo "~${TARGET_USER}")"
-log_info "Target non-root user: ${COLOR_YELLOW}${TARGET_USER}${COLOR_RESET} (Home: ${USER_HOME})"
+# 2. Deteksi Deterministik Non-Root Target User & Target Home
+TARGET_USER="${SUDO_USER:-$USER}"
 
-# 3. Beri izin eksekusi pada seluruh modul skrip
+if [[ "$TARGET_USER" == "root" ]]; then
+    # Jika login murni root tanpa sudo, cari akun reguler pertama (UID >= 1000)
+    REGULAR_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || true)"
+    if [[ -n "$REGULAR_USER" ]]; then
+        log_warn "Dijalankan langsung oleh root tanpa SUDO_USER."
+        log_warn "Mengarahkan konfigurasi user-space ke akun reguler: ${COLOR_YELLOW}${REGULAR_USER}${COLOR_RESET}"
+        TARGET_USER="$REGULAR_USER"
+    else
+        log_error "Tidak ditemukan user reguler (UID >= 1000) pada sistem!"
+        log_error "Buat user biasa terlebih dahulu atau jalankan 'sudo ./install.sh' dari akun biasa."
+        exit 1
+    fi
+fi
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
+
+if [[ -z "$TARGET_HOME" || ! -d "$TARGET_HOME" ]]; then
+    log_error "Direktori home untuk user '${TARGET_USER}' (${TARGET_HOME}) tidak valid atau tidak ditemukan!"
+    exit 1
+fi
+
+# Ekspor variabel agar diwariskan ke sub-skrip
+export TARGET_USER
+export TARGET_HOME
+export TARGET_GROUP
+
+log_info "Target Pengguna : ${COLOR_YELLOW}${TARGET_USER}${COLOR_RESET} (Grup: ${TARGET_GROUP})"
+log_info "Direktori Home  : ${COLOR_YELLOW}${TARGET_HOME}${COLOR_RESET}"
+log_info "Model Eksekusi  : Privilege Separation (Root -> Sistem, sudo -u ${TARGET_USER} -> User-space)"
+
+# 3. Berikan izin eksekusi pada modul skrip
 chmod +x "${REPO_DIR}/scripts/"*.sh
 chmod +x "${REPO_DIR}/hermes/run-hermes.sh"
 
-# 4. Eksekusi Modular: Tahap 01 - Kernel & Resource Tuning
+# 4. Tahap 01: Tuning Sistem & Kernel (Root Level)
 log_title "Tahap 1/4: Kernel Tuning, zRAM, EarlyOOM & Zero-Bloat Purge"
 if "${REPO_DIR}/scripts/01-tuning.sh"; then
     log_success "Tahap 01 selesai."
@@ -70,7 +97,7 @@ else
     exit 1
 fi
 
-# 5. Eksekusi Modular: Tahap 02 - Desktop & UI Theme
+# 5. Tahap 02: Desktop & Theme (Root + User-space)
 log_title "Tahap 2/4: IceWM Desktop, FT10 Module & Papirus Theme"
 if "${REPO_DIR}/scripts/02-desktop-theme.sh"; then
     log_success "Tahap 02 selesai."
@@ -79,7 +106,7 @@ else
     exit 1
 fi
 
-# 6. Eksekusi Modular: Tahap 03 - Remote Desktop Native (AnyDesk)
+# 6. Tahap 03: Remote Apps (Root + User-space)
 log_title "Tahap 3/4: Instalasi Native AnyDesk & Integrasi Taskbar"
 if "${REPO_DIR}/scripts/03-remote-apps.sh"; then
     log_success "Tahap 03 selesai."
@@ -88,7 +115,7 @@ else
     exit 1
 fi
 
-# 7. Eksekusi Modular: Tahap 04 - Hermes Agent Client CLI
+# 7. Tahap 04: Hermes Client Setup (Root + User-space terisolasi)
 log_title "Tahap 4/4: Setup Virtualenv Hermes & Client-API CLI"
 if "${REPO_DIR}/scripts/04-hermes-setup.sh"; then
     log_success "Tahap 04 selesai."
@@ -97,34 +124,49 @@ else
     exit 1
 fi
 
-# 8. Pembersihan Akhir Sistem (Zero-Bloat Total Cleanup)
+# 8. Verifikasi Akhir Kepemilikan User-Space
+log_title "Verifikasi Integritas Hak Akses Pengguna"
+log_info "Memastikan seluruh direktori di ${TARGET_HOME} bebas dari kepemilikan root..."
+chown -R "${TARGET_USER}:${TARGET_GROUP}" \
+    "${TARGET_HOME}/.venv" \
+    "${TARGET_HOME}/.config" \
+    "${TARGET_HOME}/.local" \
+    "${TARGET_HOME}/.icewm" \
+    "${TARGET_HOME}/Desktop" 2>/dev/null || true
+
+# Pastikan permission file rahasia .env terkunci 600
+if [[ -f "${TARGET_HOME}/.config/hermes/.env" ]]; then
+    chmod 600 "${TARGET_HOME}/.config/hermes/.env"
+    chown "${TARGET_USER}:${TARGET_GROUP}" "${TARGET_HOME}/.config/hermes/.env"
+    log_success "File ${TARGET_HOME}/.config/hermes/.env terkunci aman (mode 600)."
+fi
+
+# 9. Pembersihan Akhir Sistem (Zero-Bloat Cleanup)
 log_title "Pembersihan Akhir & Optimasi Disk"
-log_info "Menjalankan pembersihan cache APT dan file sementara..."
+log_info "Membersihkan cache paket dan file sementara..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get autoremove --purge -y >/dev/null 2>&1 || true
 apt-get clean >/dev/null 2>&1 || true
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* 2>/dev/null || true
 log_success "Pembersihan total cache selesai."
 
-# 9. Ringkasan & Panduan Pasca-Instalasi
-log_title "INSTALASI SELESAI DENGAN SUKSES"
+# 10. Ringkasan Hasil
+log_title "INSTALASI SELESAI TANPA PERMISSION TRAP"
 echo -e "${COLOR_GREEN}Sistem antiX Remote Station siap digunakan!${COLOR_RESET}"
 echo -e ""
-echo -e "Komponen Terpasang:"
-echo -e "  [x] zRAM (zstd 100% RAM) & EarlyOOM (<5% RAM, <10% Swap safeguard)"
-echo -e "  [x] sysctl low-ram tuning (swappiness=150, vfs_cache_pressure=50, overcommit_memory=2)"
-echo -e "  [x] IceWM + FT10 taskbar styling + Papirus icon theme"
-echo -e "  [x] AnyDesk native binary + desktop & taskbar pin"
-echo -e "  [x] Hermes Agent CLI isolated client (~/.venv/hermes, ulimit 400MB)"
+echo -e "Status Akun Target:"
+echo -e "  - User: ${COLOR_YELLOW}${TARGET_USER}${COLOR_RESET}"
+echo -e "  - Home: ${COLOR_YELLOW}${TARGET_HOME}${COLOR_RESET}"
+echo -e "  - Virtualenv: ${COLOR_YELLOW}${TARGET_HOME}/.venv/hermes${COLOR_RESET} (Milik: ${TARGET_USER})"
+echo -e "  - Konfigurasi: ${COLOR_YELLOW}${TARGET_HOME}/.config/hermes/.env${COLOR_RESET} (Izin: 600)"
 echo -e ""
 echo -e "${COLOR_YELLOW}Langkah Selanjutnya:${COLOR_RESET}"
-echo -e "1. Konfigurasi API Key Hermes:"
-echo -e "   ${COLOR_BOLD}nano ${USER_HOME}/.config/hermes/.env${COLOR_RESET}"
-echo -e "   (Isi HERMES_API_KEY dengan API key Anda)"
+echo -e "1. Konfigurasikan API Key Hermes:"
+echo -e "   ${COLOR_BOLD}nano ${TARGET_HOME}/.config/hermes/.env${COLOR_RESET}"
 echo -e ""
-echo -e "2. Jalankan Hermes Agent dari terminal atau shortcut desktop:"
+echo -e "2. Jalankan Hermes Agent CLI (bisa dari desktop atau terminal):"
 echo -e "   ${COLOR_BOLD}run-hermes.sh${COLOR_RESET}"
 echo -e ""
-echo -e "3. Reboot sistem untuk menerapkan konfigurasi zRAM dan kernel secara penuh:"
+echo -e "3. Reboot sistem untuk menerapkan konfigurasi kernel dan zRAM:"
 echo -e "   ${COLOR_BOLD}sudo reboot${COLOR_RESET}"
 echo -e ""

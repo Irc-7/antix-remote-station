@@ -2,36 +2,45 @@
 # ==============================================================================
 # scripts/02-desktop-theme.sh
 # Konfigurasi IceWM Windows-Friendly, Modul FT10, Font, dan Papirus Icon Theme
+# Refactored: Preservasi Hak Akses User-Space (Anti Permission-Trap)
 # ==============================================================================
 set -euo pipefail
 
-# Verifikasi hak akses root
+# 1. Verifikasi Hak Akses Root
 if [[ $EUID -ne 0 ]]; then
     echo -e "\e[31m[ERROR] Skrip 02-desktop-theme.sh harus dijalankan sebagai root (sudo)!\e[0m" >&2
     exit 1
 fi
 
-# Tentukan target user non-root (prioritaskan SUDO_USER)
-TARGET_USER="${SUDO_USER:-}"
-if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]]; then
-    # Cari pengguna reguler pertama dengan UID >= 1000
-    TARGET_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || echo "demo")"
+# 2. Deteksi Deterministik Target Non-Root User & Home
+TARGET_USER="${TARGET_USER:-${SUDO_USER:-$USER}}"
+if [[ "$TARGET_USER" == "root" ]]; then
+    REGULAR_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || true)"
+    if [[ -n "$REGULAR_USER" ]]; then
+        TARGET_USER="$REGULAR_USER"
+    else
+        echo -e "\e[31m[ERROR] Tidak ditemukan user reguler pada sistem!\e[0m" >&2
+        exit 1
+    fi
 fi
-USER_HOME="$(eval echo "~${TARGET_USER}")"
 
-echo -e "\e[34m[02-THEME]\e[0m Mengonfigurasi antarmuka untuk pengguna: \e[33m${TARGET_USER}\e[0m (${USER_HOME})..."
+TARGET_HOME="${TARGET_HOME:-$(getent passwd "$TARGET_USER" | cut -d: -f6)}"
+TARGET_GROUP="${TARGET_GROUP:-$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")}"
+
+echo -e "\e[34m[02-THEME]\e[0m Mengonfigurasi antarmuka untuk pengguna: \e[33m${TARGET_USER}\e[0m"
+echo -e "  -> Home target: \e[33m${TARGET_HOME}\e[0m"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 
-# 1. Pasang papirus-icon-theme, font ringan, dan paket penunjang FT10
-echo -e "\e[34m[02-THEME]\e[0m Memasang papirus-icon-theme dan font sans..."
+# 3. Instalasi Paket Tema di Level Sistem
+echo -e "\e[34m[02-THEME]\e[0m Memasang papirus-icon-theme dan font sans di level sistem..."
 apt-get install --no-install-recommends -y \
     papirus-icon-theme \
     fonts-liberation \
     fonts-dejavu-core
 
-# Coba pasang paket FT10 dari repository antiX jika tersedia
+# Periksa paket FT10 dari repository antiX
 echo -e "\e[34m[02-THEME]\e[0m Memeriksa dan menginstal paket modul FT10 antiX..."
 if apt-cache search "^ft10-transformation" | grep -q "ft10-transformation"; then
     apt-get install --no-install-recommends -y ft10-transformation || true
@@ -39,7 +48,7 @@ elif apt-cache search "^ft10" | grep -q "^ft10"; then
     apt-get install --no-install-recommends -y ft10 || true
 fi
 
-# 2. Fungsi konfigurasi lingkungan GTK & IceWM untuk direktori target
+# 4. Fungsi Konfigurasi File Lingkungan GTK & IceWM
 apply_theme_configs() {
     local target_dir="$1"
     local owner="$2"
@@ -75,13 +84,12 @@ gtk-enable-event-sounds=0
 gtk-enable-input-feedback-sounds=0
 EOF
 
-    # Konfigurasi IceWM Preferences (Taskbar bawah bergaya Windows, minim animasi/beban)
+    # Konfigurasi IceWM Preferences (Taskbar bawah gaya Windows)
     local icewm_pref="${target_dir}/.icewm/preferences"
     if [[ ! -f "$icewm_pref" && -f "/etc/X11/icewm/preferences" ]]; then
         cp "/etc/X11/icewm/preferences" "$icewm_pref"
     fi
 
-    # Append atau update parameter IceWM ramah RAM & gaya Windows
     cat << 'EOF' >> "${target_dir}/.icewm/preferences"
 
 # --- antiX Remote Station Low-RAM Overrides ---
@@ -103,7 +111,7 @@ ShowThemesMenu=0
 ShowHelp=0
 EOF
 
-    # Aktivasi skrip FT10 pada file startup IceWM
+    # Hook startup FT10 pada IceWM
     local startup_file="${target_dir}/.icewm/startup"
     touch "$startup_file"
     if ! grep -q "ft10" "$startup_file"; then
@@ -117,28 +125,30 @@ elif command -v ft10 >/dev/null 2>&1; then
 fi
 EOF
     fi
-    chmod +x "$startup_file"
+    chmod 755 "$startup_file"
 
     if [[ -n "$owner" && -n "$group" ]]; then
-        chown -R "${owner}:${group}" "${target_dir}/.gtkrc-2.0" "${target_dir}/.config" "${target_dir}/.icewm"
+        chown -R "${owner}:${group}" \
+            "${target_dir}/.gtkrc-2.0" \
+            "${target_dir}/.config" \
+            "${target_dir}/.icewm"
     fi
 }
 
-# 3. Terapkan ke user aktif dan template skel
-echo -e "\e[34m[02-THEME]\e[0m Menerapkan konfigurasi tema ke ${USER_HOME}..."
-TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
-apply_theme_configs "$USER_HOME" "$TARGET_USER" "$TARGET_GROUP"
+# 5. Terapkan ke Akun Target User dan Template /etc/skel
+echo -e "\e[34m[02-THEME]\e[0m Menerapkan konfigurasi tema ke ${TARGET_HOME}..."
+apply_theme_configs "$TARGET_HOME" "$TARGET_USER" "$TARGET_GROUP"
 
 echo -e "\e[34m[02-THEME]\e[0m Menerapkan template ke /etc/skel..."
-apply_theme_configs "/etc/skel" "" ""
+apply_theme_configs "/etc/skel" "root" "root"
 
-# 4. Aktifkan modul FT10 secara sistem jika CLI antiX tersedia
+# 6. Aktifkan FT10 via konteks user murni
 if command -v ft10-enable >/dev/null 2>&1; then
-    echo -e "\e[34m[02-THEME]\e[0m Menjalankan ft10-enable..."
-    su - "$TARGET_USER" -c "ft10-enable" 2>/dev/null || true
+    echo -e "\e[34m[02-THEME]\e[0m Mengaktifkan modul FT10 melalui sudo -u ${TARGET_USER}..."
+    sudo -u "$TARGET_USER" ft10-enable 2>/dev/null || true
 fi
 
-# 5. Pembersihan APT Cache
+# 7. Pembersihan Cache APT
 apt-get autoremove --purge -y
 apt-get clean
 rm -rf /var/lib/apt/lists/*
