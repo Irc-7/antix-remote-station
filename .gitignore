@@ -1,0 +1,21 @@
+# Environment and API keys
+.env
+!.env.example
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# System / IDE files
+.DS_Store
+Thumbs.db
+*.swp
+*~

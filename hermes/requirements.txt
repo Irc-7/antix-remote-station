@@ -1,0 +1,8 @@
+# Hermes Agent Lightweight Client-API Dependencies
+# Wajib diinstall dengan flag: --no-cache-dir --only-binary=:all:
+httpx>=0.25.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+rich>=13.0.0
+prompt_toolkit>=3.0.36
+click>=8.1.0

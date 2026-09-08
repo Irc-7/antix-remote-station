@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=AnyDesk
+GenericName=Remote Desktop
+Comment=Connect to remote devices natively
+Exec=anydesk %u
+Icon=anydesk
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupNotify=true
+MimeType=x-scheme-handler/anydesk;
+Keywords=remote;desktop;vnc;rdp;anydesk;

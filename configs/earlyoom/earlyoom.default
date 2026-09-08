@@ -1,0 +1,5 @@
+# /etc/default/earlyoom
+# Konfigurasi daemon earlyoom untuk antiX Remote Station (RAM 1 GB)
+# Memutus proses nakal saat sisa RAM < 5% dan sisa Swap < 10%
+
+EARLYOOM_ARGS="-m 5 -s 10 -r 60 --avoid '(^|/)(init|Xorg|icewm|roxterm|sshd|bash|run-hermes\.sh)$' --prefer '(^|/)(anydesk|chromium|firefox|webcontent)$'"

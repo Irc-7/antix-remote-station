@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Agent CLI
+GenericName=AI Agent Client
+Comment=Nous Research Hermes Agent Client-API CLI (Low-RAM Edition)
+Exec=roxterm --title="Hermes Agent CLI" -e /usr/local/bin/run-hermes.sh
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;Network;
+StartupNotify=true
+Keywords=ai;hermes;agent;cli;llm;nous;
