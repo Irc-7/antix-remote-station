@@ -214,3 +214,5 @@ Untuk memverifikasi integritas hak akses dan performa:
   ```bash
   sysctl vm.swappiness vm.vfs_cache_pressure vm.overcommit_memory
   ```
+
+# Telemetry sync enabled
